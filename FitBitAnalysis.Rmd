@@ -1,0 +1,811 @@
+---
+title: "Analysis of Fitbit data"
+author: "beetfeet"
+date: "09/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(jsonlite)
+library(hms)
+library(ggplot2)
+library(cowplot)
+library(tidyr)
+library(dplyr)
+library(egg)
+library(grid)
+library(gridExtra)
+library(gtable)
+library(scales)
+library(ggfortify)
+library(readr)
+library(tibble)
+library(shades)
+theme_set(theme_minimal())
+theme_update(text = element_text(face="bold", color = "black"), 
+             axis.text = element_text(face="bold", color = "black"))
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, cache = TRUE, message=FALSE)
+```
+I've been walking around with a Fitbit Charge 2 for over two years, and figured it would be interesting play with all the data that it collects. This is an exploratory tutorial on how to do that, done as an R markdown file - with a bit of tinkering, you can use it on your data! 
+
+### Downloading the data
+<details>
+  <summary>Click to expand the section on downloading the data</summary>
+  
+Follow the instructions [here](https://help.fitbit.com/articles/en_US/Help_article/1133): set up an account on [fitbit.com](fitbit.com), if you don't already have one, then log in and click on the settings gear (top right). Click `Settings` and `Data Export`, then `Request My Data`. You will need to confirm the request through an email from them. They will assemble the data for export and send you another email when it's ready (happened within an hour or two for me). There will be a link to download the data on that same `Data Export` page.
+
+The data is a zipped archive with a `YourName` folder, and within it, the `user-site-export` folder contains the relevant data files in JSON format. If you want to process your own data using this vignette, unzip and rename `YourName` to `data` and place it in the same folder as the .Rmd file.
+</details>
+
+# Steps
+<details open>
+  <summary>How much do I walk, and when?</summary>
+  
+The fitbit records how many steps per minute I walk. What does that look like? Figure 1B shows the overall heatmap, where each thin horizontal line represents time along each day, and the colors represent the steps/min. We can already see some clear patterns of activity at the same times of day - get up, go to work, go to lunch, go home. That's for the weekdays (not a ton of walking on the job). When averaged separately for each day of the week (Figure 1A), we can see these walking spikes at particular times again, and they are not present for the weekends. But on some days, there's a lot of walking in general - those are the horizontal red streaks in Figure 1B, also seen in the total steps for each day (Figure 1C, colored by the walking pace of the steps). That's hiking on the weekends. We can also see that there is more walking on Sat and Sun overall, compared to weekdays (total area for each sliver in Figure 1A). But are all the weekends like that? How similar are the weekends and the weekdays to each other? If we apply principal component analysis and stratify the days by their first component (i.e. line them up by their most prominent differences), we can take the top, middle and bottom 10% of the days and average within those groups. That is done separately for weekdays and weekends in Figure 1D. We can see that the weekdays are more similar to each other (although still variable), but the weekends vary the most. There is still couch time on some weekends.    
+   
+```{r steps1, results  = 'hide', fig.width = 7, fig.height = 10}  
+jsonFileList <- list.files(path = "./data/user-site-export", pattern = '\\.json$')
+
+# collect the steps/min values from all the files into a single dataframe, extract and reformat the day of week and time of day (hms)
+tz <- "America/Los_Angeles"
+stepsFiles <- grep(pattern = "^steps-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+steps <- do.call(rbind,lapply(stepsFiles, function(file) fromJSON(paste0("./data/user-site-export/", file))))
+# the date/time is apparently stored in UTC/GMT time, and needs to be displayed in the right timezone to make sense
+steps$dateTime <- as.POSIXct(steps$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = "UTC")
+attributes(steps$dateTime)$tzone <- tz 
+steps$value <- as.numeric(steps$value)
+steps$date <- as.Date(steps$dateTime, tz = tz)
+steps$day <- format(steps$dateTime, format = "%A")
+steps$day <- factor(steps$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+steps$hms <- as.hms(steps$dateTime, tz = tz)
+
+#now, prepare several separate analysis plots. These will be put together as panels into a single figure later.
+
+# define some color schemes to be used for plotting
+dayOfWeekColors = c("gray10", "gray30", "gray50", "gray70", "gray90", "goldenrod2", "goldenrod3")
+heatmapPalette <- colorRampPalette(c("gray95", "green", "yellow", "red")) # to display the steps/min and maybe other things
+#tweakedhtmpPalette <- chroma(heatmapPalette, values = scalefac(0.5))
+#tweakedhtmpPalette <- hue(heatmapPalette, values = delta(-30))
+tweakedhtmpPalette <- brightness(heatmapPalette, values = scalefac(0.5)) # some tweaked versions of the palette to show averaged values
+
+# a helper function to reformat hour-minute-second data into hour-minute AM/PM for prettier output. Will be used in axis labels
+format_hampm <- function(hms) strftime(hms, format="%I %p", tz = "UTC") # the hms data apparently needs to be converted in UTC timezone to look correct
+
+# the first plot/panel will show steps/min averaged for each day of the week, plotted along the time of day
+meanStepsByDayHMS <- steps %>%
+  group_by(day, hms) %>%
+  summarise(aveSteps = mean(value))
+
+meanStepsByDayHMSPlot <- ggplot(data = meanStepsByDayHMS, aes(x = hms, y = aveSteps, fill = day)) +
+  stat_smooth(geom = "area", position = "stack", method = "loess", span = .05) + # smooth over the time domain, too jagged otherwise
+  scale_fill_manual(values=dayOfWeekColors) +
+  scale_x_time(labels = format_hampm, breaks = NULL, position = "top") + # move the labels out of the way, this panel won't have them
+  scale_y_continuous(breaks = NULL) +
+  labs(y = "Profile by time\nand day of week") +
+  guides(fill = guide_legend(title = NULL, nrow = 4)) + # specify the legend, but don't include in plot - will display separately
+  theme(legend.key.size = unit(0.5, "lines"),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank()) +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+# meanStepsByDayHMSPlot + theme(legend.position = "bottom") # if you want to preview/tweak this plot by itself
+
+# the second ("main") plot will be a raster heatmap plot with time of day on the x axis, all the days along the y axis,
+# and the step/min value shown as color in the heatmap
+
+# I want to have a y axis date scale that increases as it goes down (a reverse of the default), so need
+# a function to define a new transformation (for ggplot scales) that combines two existing "time" and "reverse" transformations
+c_trans <- function(a, b, breaks = b$breaks, format = b$format) {
+  a <- as.trans(a)
+  b <- as.trans(b)
+  name <- paste(a$name, b$name, sep = "-")
+  trans <- function(x) a$trans(b$trans(x))
+  inv <- function(x) b$inverse(a$inverse(x))
+  trans_new(name, trans, inverse = inv, breaks = breaks, format=format)
+}
+# also need to define a new breaks function that will reverse the ranges
+revdate_breaks <- function(range) date_breaks("2 months")(rev(range))
+rev_date <- c_trans("reverse", "time", breaks = revdate_breaks, format = date_format("%b-%y"))
+
+# to automatically compute a good color gradient scale for the heatmap values that covers a meaningful range of steps per min 
+# and is not too influenced by a few outliers, we trim the top values of the scale to only include step/min values that are
+# at least 1% as frequent as the most frequent value. This excludes rare outliers of very high steps/min values that skew the scale
+# get a distribution of the number of occurences for each steps value, and find the lowest number of steps that
+# occurs at 1% of the highest frequency of steps (not counting the frequency of zero steps)
+stepsTable <- table(steps$value)
+stepsTop <- 10*ceiling(min(as.integer(
+  names(stepsTable[stepsTable < max(stepsTable[names(stepsTable) != 0])*0.01])))/10)
+
+heatmapStepsPlot <- ggplot(steps, aes(hms, as.POSIXct(date))) + 
+  geom_raster(aes(fill = value)) +
+  scale_fill_gradientn(name = "Steps/min", limits = c(0, stepsTop), 
+                       colors = heatmapPalette(4)) +
+  scale_y_continuous(trans = rev_date) +
+  scale_x_time(labels = format_hampm, breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  xlab("Time of day") + ylab("") + 
+  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+# heatmapStepsPlot + theme(legend.position = "bottom")
+
+# the third plot is the total number of steps per day (will be shown next to and as an extension of the heatmap),
+# so the days are on the y axis, and the number of steps are on the x axis
+# I'm also color-coding the steps in each bar to reflect the rate of walking (steps/min) that those steps came from
+# so the plot is actually a stacked barplot
+
+# also will have a smoothed line for total steps on each date, to look at the trends over time
+# so need to compute the total steps for each date
+totalStepsByDate <- steps %>%
+  group_by(date) %>%
+  summarise(totalSteps = sum(value))
+
+stepsByDatePlot <- ggplot(steps, aes(as.POSIXct(date), value, fill = value, group = value)) +
+  geom_col(position=position_stack(reverse = T)) +
+  geom_smooth(data = totalStepsByDate, mapping = aes(x = as.POSIXct(date), y = totalSteps), inherit.aes = FALSE) +
+  scale_fill_gradientn(name = "Steps/min", limits = c(0, stepsTop), colors = heatmapPalette(4), aesthetics = "fill") +
+  scale_x_continuous(trans = rev_date, breaks = NULL, position = "top") +
+  labs(x = NULL, y = "Total steps per day") +
+  coord_flip() + 
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank()) + # scale_*_continuous doesn't respect coord_flip(), but theme(axis.title.*) does
+  theme(plot.margin = unit(c(0,0,0,0), "lines")) 
+# stepsByDatePlot
+
+# the fourth plot will show the averaged steps/min for the top, middle and bottom 10% of the weekday and weekend days.
+# this requires some preparations and calculations
+
+# treating each day as a multidimensional vector of steps/min values for each minute in the day, we want to compare the days to 
+# each other by principal component analysis to find the principal component that shows the most differences between the days (PC1),
+# and then take the top, middle and bottom 10% of days along that PC1 axis for averaging. 
+# This will be done separately for weekdays/ends
+
+# spread the steps/min data into a wide format
+stepsByDate <- steps %>%
+  select(value, date, day, hms) %>%
+  spread(key = hms, value = value)
+
+# the steps data has missing values (NA) for certain minutes in days, and the R principal component functions can't deal with that
+# we can deal with this approximately by interpolating the missing values with dineof() of the sinkr package, and then prcomp
+
+# uncomment the next two lines to install the sinkr package
+#library(devtools)
+#install_github("marchtaylor/sinkr")
+library(sinkr)
+filledStepsByDate <- dineof(as.matrix(stepsByDate[,-c(1,2)]))
+filledStepsByDate <- filledStepsByDate$Xa
+stepsPCA <- prcomp(filledStepsByDate, center = FALSE, scale = FALSE, rank. = 10)
+stepsByDatePC1 <- stepsPCA[["x"]][,1]
+
+# How does the PC1/PC2 distribution look like in terms of days of the week?
+#autoplot(stepsPCA, data = stepsByDate, colour = 'day')
+
+# compute the values of PC1 that break the days into 20 quantiles along PC1, separately for weekdays/ends
+# we do 20 quantiles so that quantiles 10+11 together can be taken as the middle 10% of the days
+weekdayIndices <- stepsByDate$day %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+weekendIndices <- stepsByDate$day %in% c("Saturday", "Sunday")
+weekdayQuantiles <- quantile(stepsByDatePC1[weekdayIndices], seq(0, 1, by = 0.05), names = FALSE, na.rm = TRUE)
+weekendQuantiles <- quantile(stepsByDatePC1[weekendIndices], seq(0, 1, by = 0.05), names = FALSE, na.rm = TRUE)
+weekdayQuantileFactors <- cut(stepsByDatePC1, weekdayQuantiles, include.lowest = TRUE) 
+weekdayQuantileFactors[!weekdayIndices] <- NA
+weekendQuantileFactors <- cut(stepsByDatePC1, weekendQuantiles, include.lowest = TRUE) 
+weekendQuantileFactors[!weekendIndices] <- NA
+
+# checking how the quantiles break up the days in PC1/PC2 space
+#autoplot(stepsPCA, data = stepsByDate, colour = as.numeric(weekdayQuantileFactors))
+#autoplot(stepsPCA, data = stepsByDate, colour = as.numeric(weekendQuantileFactors))
+
+# now extract the top, mid and bottom 10% of days from the table, and average the steps/min for those groups
+top10pWeekendStepsAve <- steps[steps$date %in% stepsByDate$date[weekendQuantileFactors %in%
+                                                                  levels(weekendQuantileFactors)[c(1,2)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+middle10pWeekendStepsAve <- steps[steps$date %in% stepsByDate$date[weekendQuantileFactors %in%
+                                                                  levels(weekendQuantileFactors)[c(10,11)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+bottom10pWeekendStepsAve <- steps[steps$date %in% stepsByDate$date[weekendQuantileFactors %in%
+                                                                  levels(weekendQuantileFactors)[c(19,20)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+weekendTopMidBottomSteps <- rbind(cbind(quantile = "top 10%", top10pWeekendStepsAve),
+                                  cbind(quantile = "middle 10%", middle10pWeekendStepsAve),
+                                  cbind(quantile = "bottom 10%", bottom10pWeekendStepsAve))
+
+top10pweekdayStepsAve <- steps[steps$date %in% stepsByDate$date[weekdayQuantileFactors %in%
+                                                                  levels(weekdayQuantileFactors)[c(1,2)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+middle10pweekdayStepsAve <- steps[steps$date %in% stepsByDate$date[weekdayQuantileFactors %in%
+                                                                  levels(weekdayQuantileFactors)[c(10,11)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+bottom10pweekdayStepsAve <- steps[steps$date %in% stepsByDate$date[weekdayQuantileFactors %in%
+                                                                  levels(weekdayQuantileFactors)[c(19,20)]], ] %>%
+  group_by(hms) %>%
+  summarize(aveSteps = mean(value))
+weekdayTopMidBottomSteps <- rbind(cbind(quantile = "top 10%", top10pweekdayStepsAve),
+                                  cbind(quantile = "middle 10%", middle10pweekdayStepsAve),
+                                  cbind(quantile = "bottom 10%", bottom10pweekdayStepsAve))
+
+# now we're ready to make the fourth plot(s)
+
+# calculate a rounded common scale of steps for the averaged weekday and weekend steps
+aveStepsLimits <- 10*ceiling(range(weekdayTopMidBottomSteps$aveSteps, weekendTopMidBottomSteps$aveSteps)/10)
+
+weekendTMBplot <- ggplot(weekendTopMidBottomSteps, aes(x = hms, y = reorder(quantile, desc(quantile)))) + 
+  geom_raster(aes(fill = aveSteps)) +
+  scale_fill_gradientn(name = "Average steps/min", limits = aveStepsLimits, colors = tweakedhtmpPalette(4), aesthetics = "fill") +
+  scale_x_time(labels = format_hampm, breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  xlab("Time of day") + ylab("Weekends") +
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  theme(plot.margin = unit(c(0,0,0,0), "lines")) 
+#weekendTMBplot + theme(legend.position = "bottom")
+
+weekdayTMBplot <- ggplot(weekdayTopMidBottomSteps, aes(x = hms, y = reorder(quantile, desc(quantile)))) + 
+  geom_raster(aes(fill = aveSteps)) +
+  scale_fill_gradientn(limits = aveStepsLimits, colors = tweakedhtmpPalette(4), aesthetics = "fill") +
+  scale_x_time(labels = format_hampm, breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  xlab("Time of day") + ylab("Weekdays") +
+  guides(fill = guide_colourbar(title = "Average steps/min", title.position = "right")) +
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  theme(plot.margin = unit(c(0,0,0,0), "lines")) 
+#weekdayTMBplot + theme(legend.position = "bottom")
+
+# to prepare the legends - these will be displayed separately in custom places in the figure, so they need to be extracted
+# extract the legends from the first two plots as separate grobs, and put them together in a single grob to be displayed in the figure
+weekdayLegend <- get_legend(meanStepsByDayHMSPlot + theme(legend.position = "bottom"))
+stepsPerMinLegend <- get_legend(heatmapStepsPlot + theme(legend.position = "bottom"))
+legends <- arrangeGrob(weekdayLegend, stepsPerMinLegend, nrow = 1)
+aveLegend <- get_legend(weekdayTMBplot + theme(legend.position = "bottom"))
+
+# now, to put all the plots/legends together into a figure
+# we use the egg:ggarrange function to do most of the nice layout, mainly b/c it aligns the graph panels and can leave 
+# very little white space in between. 
+sleepFigure <- ggarrange(meanStepsByDayHMSPlot, ggplot(), 
+               heatmapStepsPlot, stepsByDatePlot, 
+               weekdayTMBplot, ggplot(),
+               weekendTMBplot, ggplot(),
+               nrow = 4, heights = c(1, 3, 0.5, 0.5), 
+               labels = c("A", "", "B", "C", "D", ""), 
+               label.args = list(gp=gpar(font=4), x=unit(1,"line"), hjust=-0.2), 
+               bottom = "Figure 1", draw = FALSE)
+
+# then manually place in the legends in the place of the empty ggplot()
+# see where in the gtable that would be (the numbering)
+# gtable_show_layout(sleepFigure) 
+sleepFigure <- gtable_add_grob(sleepFigure, legends, t=2, l=5)
+sleepFigure <- gtable_add_grob(sleepFigure, aveLegend, t=8, l=5, b=11, r=5)
+# plot(sleepFigure) # a debugging plot with background
+
+# full figure render 
+grid.newpage()
+grid.draw(sleepFigure)
+```
+</details>
+
+# Heartrate
+<details open>
+  <summary>When is it high and low?</summary>  
+The heartrate heatmap looks similar to the steps heatmap - obviously, heartrate goes up when I walk and hike (Figure 2B). You can also see the peaks and valleys in the profile for each day of the week (Figure 2A), for the weekdays. On the weekends, the heartrate is generally higher (and that is good?!) An interesting and somewhat unexpected observation is that the heartrate during sleep is much higher for the weekends (and somewhat higher on Mondays). One possibility is that it's because of the beers on the evenings before? Alcohol raises your heartrate, but I did not think it would be that much.  
+  
+```{r heartrate1, fig.width = 7, fig.height = 10}
+# collect the heartrate values from all the files into a single dataframe, extract and reformat the day of week and time of day (hms)
+heartrateFiles <- grep(pattern = "^heart_rate-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+heartrates <- do.call(rbind,lapply(heartrateFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+# the date/time is apparently stored in UTC/GMT time, and needs to be displayed in the right timezone to make sense
+heartrates$dateTime <- as.POSIXct(heartrates$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = "UTC")
+attributes(heartrates$dateTime)$tzone <- tz 
+heartrates[,2:3] <- lapply(heartrates[,2:3], as.numeric)
+heartrates$date <- as.Date(heartrates$dateTime, tz = tz)
+heartrates$day <- format(heartrates$dateTime, format = "%A")
+heartrates$day <- factor(heartrates$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+heartrates$hms <- as.hms(heartrates$dateTime, tz = tz)
+
+# the value.confidence number in the data is supposed to be some vaguely defined confidence of the bpms, with 0 being no data at all
+# (although there is still an associated value.bpm number for those 0 entries...)
+# my data doesn't have very many 0 confidence values, and the distribution of bpms for each confidence value seems very similar
+# so I think I will ignore the confidence values for now
+#ggplot(heartrates, aes(x=value.confidence)) + geom_histogram()
+#ggplot(heartrates, aes(x=value.bpm)) + facet_wrap(~ value.confidence) + geom_histogram()
+
+# for unexplained reasons, for me a few of the heartrate entries are not in chronological order in the json files
+# This happens on only a handful of dates, two of which are US daylight savings "fall back" days, within an hour period
+# at 1-2am (but the fall back happens at 2-3am). The other dates may have had to do with international travel on my part.
+# But, none of this happens with the steps/min data above, this is peculiar to heartrate - get your poop together, Fitbit. 
+sequentialTimeDifferences <- diff(heartrates$dateTime)
+weirdEntries <- heartrates[which(sequentialTimeDifferences < 0),]
+# unique(weirdEntries$date)
+
+# This may cause grief in later calculations, so let's sort it straight
+heartrates <- heartrates %>% arrange(dateTime)
+
+# the heartrate is recorded with some seemingly random and odd time intervals
+# it makes things easier if we calculate average heart rate values within 15 second intervals
+heartrates$roundhms <- as.hms(floor(heartrates$hms/15)*15)
+heartrates2 <- heartrates %>% 
+  group_by(date, day, roundhms) %>%
+  summarise(meanbpm = mean(value.bpm))
+heartrates2$dateTime <- as.POSIXct(paste(heartrates2$date, heartrates2$roundhms))
+
+# there will be several panels in the heartrate figure as well. The first panel/plot will be a line graph of averaged
+# heartrate for each day of the week, along the day time
+medianBPMsByDayHMS <- heartrates2 %>%
+  group_by(day, roundhms) %>%
+  summarise(aveBPMs = median(meanbpm))
+
+medianBPMsByDayHMSPlot <- ggplot(data = medianBPMsByDayHMS, aes(x = roundhms, y = aveBPMs, color = day)) +
+  geom_smooth(method = "loess", span = .1, size = 2, se = FALSE) + 
+  scale_color_manual(values=dayOfWeekColors) +
+  scale_x_time(labels = format_hampm, breaks = NULL, position = "top") + # move the labels out of the way, this panel won't have them
+  labs(y = "Median BPM") +
+  guides(color = guide_legend(title = NULL, nrow = 7)) + # specify the legend, but don't include in plot - will display separately
+  theme(legend.key.size = unit(0.5, "lines"),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+# medianBPMsByDayHMSPlot + theme(legend.position = "bottom") # if you want to preview/tweak this plot by itself
+
+# the second plot will be a heatmap as above with steps. Figure out a good range of bpms to base the color scale on
+# by excluding the top and bottom 5% of outlier values, and rounding that
+bpmRange <- quantile(heartrates2$meanbpm, c(0.05, 0.95))
+bpmRange <- c(5*floor(min(bpmRange)/5), 5*ceiling(max(bpmRange)/5))
+
+heatmapPalette <- colorRampPalette(c("gray95", "green", "yellow", "red", "purple"))
+
+heatmapbpmsPlot <- ggplot(heartrates2, aes(roundhms, as.POSIXct(date))) + 
+  geom_raster(aes(fill = meanbpm)) +
+  scale_fill_gradientn(name = "BPM", limits = bpmRange, oob = squish, 
+                       colors = heatmapPalette(5)) +
+  scale_y_continuous(trans = rev_date) +
+  scale_x_time(labels = format_hampm, breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  xlab("Time of day") + ylab("") + 
+  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+#heatmapbpmsPlot + theme(legend.position = "bottom")
+
+# for the third panel, I'll plot the resting heart rate (as a color value) for each day, alongside the heatmap.
+# the resting heartrate is not simply the minimal heart rate of the day (although close to it), it is calculated in some fancier way.
+
+# collect the resting heartrate values from all the files into a single dataframe, extract and reformat the day of week 
+restingheartrateFiles <- grep(pattern = "^resting_heart_rate-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+restingheartrates <- do.call(rbind,lapply(restingheartrateFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+# resting heartrate files appear to be padded with zero-filled data for all dates in a full year (including dates in the future)
+# for unknown reasons, and this needs to be cleaned up
+restingheartrates <- restingheartrates[!is.na(restingheartrates$value.date),]
+
+restingBPMHeatmapPlot <- ggplot(restingheartrates, aes(x=1, y = as.POSIXct(value.date, format = "%m/%d/%y"))) +
+  geom_raster(aes(fill = value.value)) +
+  scale_fill_gradientn(name = "Heartrate, BPM", limits = bpmRange, oob = squish, 
+                       colors = heatmapPalette(5)) +
+  scale_y_continuous(trans = rev_date) +
+  labs(x = "Resting\nheartrate", y = NULL) +
+  theme(legend.position = "none", 
+        axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  theme(plot.margin = unit(c(0,4,0,4), "lines")) 
+# restingBPMHeatmapPlot  
+
+# to prepare the legends - these will be displayed separately in custom places in the figure, so they need to be extracted
+weekdayBPMLegend <- get_legend(medianBPMsByDayHMSPlot + theme(legend.position = "bottom"))
+BPMHeatmapLegend <- get_legend(heatmapbpmsPlot + theme(legend.position = "bottom"))
+BPMlegends <- arrangeGrob(weekdayBPMLegend, BPMHeatmapLegend, nrow = 2)
+
+# now, to put all the plots/legends together into a figure
+BPMFigure <- ggarrange(medianBPMsByDayHMSPlot, ggplot(), 
+               heatmapbpmsPlot, restingBPMHeatmapPlot, 
+               nrow = 2, heights = c(1.2, 3), widths = c(15, 1),
+               labels = c("A", "", "B", "C"), 
+               label.args = list(gp=gpar(font=4), x=unit(1,"line"), hjust=-0.0), 
+               bottom = "Figure 2", draw = FALSE)
+
+# then manually place in the legends in the place of the empty ggplot()
+# see where in the gtable that would be (the numbering)
+# gtable_show_layout(BPMFigure) 
+BPMFigure <- gtable_add_grob(BPMFigure, BPMlegends, t=2, l=5)
+# plot(BPMFigure) # a debugging plot with background
+
+# full figure render 
+grid.newpage()
+grid.draw(BPMFigure)
+```
+
+How does the steps/min and heartrate data correlate with each other? If we plot a heatmap of their combinations (Figure 3), with heartrate on the x axis, steps/min on the y, and the color denoting how many times that combination is encountered, we can see two main regimes that I'm in: a huge blob of low steps/min and (mostly) low heartrate, i.e. just sitting around. And a cloud at 100-120 steps/min and higher heartrate - i.e. walking. Note that there is also a high count of 0 steps/min at higher BPMs - that's likely bicycling, and resting after walking.  
+```{r steps-bpm}
+stepsAndBPM <- inner_join(steps, heartrates2, by = c("date", "hms" = "roundhms"))
+
+ggplot(stepsAndBPM, aes(meanbpm, value)) +
+  geom_bin2d() +
+  labs(x = "Heartrate, BPM", y = "Walking pace, steps/min", caption = "Figure 3") +
+  scale_fill_gradient(limits = c(10, 1000), oob = squish) +
+  theme(plot.caption = element_text(hjust = 0.5))
+```
+</details>  
+
+# Sleep
+<details open>
+  <summary>Any interesting patterns in the sleep?</summary>  
+The Fitbit records sleep data in the form of levels - deep, light and REM sleep. The sleep heatmap, color coded by these levels, is fairly uniform (Figure 4A). If you average out the levels over time, separately for weekdays and weekends (Figure 4B), you can see that I go to sleep earlier and get up earlier on the weekdays - no surprise. Within the night, the deep sleep tends to happen earlier in the night, with more REM sleep toward the morning - as expected.  
+  
+```{r sleep}
+# collect the sleep values from all the files into a single dataframe
+# these data are stored in a more complicated, nested structure that needs to be imported a bit differently
+# we end with an Nx14 data frame with a row for each instance of sleep (typically one long sleep per day, sometimes more than one)
+# the first 13 columns contain single descriptive values for each row (date, startTime, endTime, duration),
+# and in the 14th ("levels") column for each row there is a nested 1x3 dataframe with detailed sleep phase durations
+# value [1,1] within this dataframe is another nested "summary" 1x7 dataframe with overall sleep phase durations (deep, rem, etc)
+# values [1,2] and [1,3] (aka "data" and "shortData") are lists of length 1 (!), the elements of which are Nx3 data frames,
+# containing the "dateTime", "level" i.e. sleep phase (wake, deep, light, rem etc), and its duration. 
+# shortData contains only short wake phases, not sure why it is stored as a separate structure. Overall, hairy data structure.
+sleepFiles <- grep(pattern = "^sleep-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+sleep <- lapply(sleepFiles, function(file) fromJSON(paste0("./data/user-site-export/", file)))
+sleep <- rbind_pages(sleep)
+
+# familiarizing with the data
+# there are two "types" that each sleep entry can be. 
+#unique(sleep$type)
+# "stages" means more accurate data for the sleep phases was collected (deep, light, rem)
+# "classic" means more coarse info was collected, usually from shorter sleeps or poorly measured data. 
+# I have mostly "stages", but a significant number of "classic" as well
+#dim(sleep[sleep$type == "stages",])
+#dim(sleep[sleep$type == "classic",])
+# The values of "level" for each sleep type
+#unique(unlist(sapply(sleep[,"levels"]$data, function(x) unique(x$level))))
+#unique(unlist(sapply(sleep[sleep$type == "stages","levels"]$data, function(x) unique(x$level))))
+#unique(unlist(sapply(sleep[sleep$type == "classic","levels"]$data, function(x) unique(x$level))))
+# in shortData, only "wake" entries are present
+#unique(unlist(sapply(sleep[,"levels"]$shortData, function(x) unique(x$level))))
+# don't know what infoCode denotes
+#unique(sleep$infoCode)
+# what are the ranges of all these values? minutesToFallAsleep doesn't seem to actually record anything, all zeroes
+#range(sleep$duration)
+#range(sleep$minutesToFallAsleep)
+#range(sleep$minutesAsleep)
+#range(sleep$minutesAwake)
+#range(sleep$minutesAfterWakeup)
+#range(sleep$efficiency)
+
+# get a list of each individual day's levels data frames, with the date of sleep appended as a column
+# then concatenate the list into one long data frame and sort it
+temp <- lapply(1:dim(sleep)[1], function(i) cbind(dateOfSleep = sleep$dateOfSleep[i], sleep[i,"levels"]$data[[1]]))
+sleepData <- do.call(rbind, temp)
+sleepData$dateTime <- as.POSIXct(sleepData$dateTime, format = "%Y-%m-%dT%H:%M:%S")
+sleepData$startDate <- as.Date(sleepData$dateTime, tz = tz)
+sleepData$endTime <- sleepData$dateTime + hms(seconds = sleepData$seconds) 
+
+# there are a lot of entries in the sleep data frame denoting durations of sleep that span the midnight mark (i.e. occur on two dates)
+# these are difficult to plot correctly, so break these duration up into two chunks, before and after sleep
+entriesOverMidnight <- sleepData[as.Date(sleepData$dateTime, tz = tz) != as.Date(sleepData$endTime, tz = tz),]
+temp <- lapply(1:dim(entriesOverMidnight)[1], function(i) {
+  x <- entriesOverMidnight[i,]
+  beforeMidnightChunk <- x
+  beforeMidnightChunk$endTime <- as.POSIXct(paste(as.Date(x$dateTime, tz = tz), "23:59:59.999"), format="%Y-%m-%d %H:%M:%S")
+  beforeMidnightChunk$seconds <- as.integer(difftime(beforeMidnightChunk$endTime, beforeMidnightChunk$dateTime, units = "secs"))
+  afterMidnightChunk <- x
+  afterMidnightChunk$dateTime <- as.POSIXct(paste(as.Date(x$endTime, tz = tz), "00:00:00"), format="%Y-%m-%d %H:%M:%S")
+  afterMidnightChunk$seconds <- as.integer(difftime(afterMidnightChunk$endTime, afterMidnightChunk$dateTime, units = "secs"))
+  return(rbind(beforeMidnightChunk, afterMidnightChunk))
+  })
+correctedEntriesOverMidnight <- do.call(rbind, temp)
+sleepData <- sleepData[as.Date(sleepData$dateTime, tz = tz) == as.Date(sleepData$endTime, tz = tz),]
+sleepData <- rbind(sleepData, correctedEntriesOverMidnight)
+sleepData <- sleepData[order(sleepData$dateTime),]
+sleepData$level <- factor(sleepData$level, levels = c("deep", "asleep", "light", "rem", "restless", "wake", "awake"))
+
+# combine some of the sleep levels into fewer types
+sleepData$type <- factor(x = NA, levels = c("deep/asleep", "light", "rem/restless", "awake"))
+sleepData$type[sleepData$level %in% c("deep", "asleep")] <- "deep/asleep"
+sleepData$type[sleepData$level %in% c("light")] <- "light"
+sleepData$type[sleepData$level %in% c("rem", "restless")] <- "rem/restless"
+sleepData$type[sleepData$level %in% c("wake", "awake")] <- "awake"
+
+# convert the data into a more convenient long format with the sleep type for each minute of all the days
+earliestSleep <- trunc(min(sleepData$dateTime, na.rm = TRUE), units = "mins")
+latestSleep <- round(max(sleepData$endTime, na.rm = TRUE), units = "mins")
+sleepByTheMinute <- data.frame(dateTime = seq(from = earliestSleep, to = latestSleep, by = "min"))
+sleepByTheMinute$date <- as.Date(sleepByTheMinute$dateTime, tz = tz)
+sleepByTheMinute$hms <- as.hms(sleepByTheMinute$dateTime, tz = tz)
+sleepByTheMinute$day <- format(sleepByTheMinute$dateTime, format = "%A")
+sleepByTheMinute$day <- factor(sleepByTheMinute$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+# define a "sleep day/night", which is a 24-hour period starting at 6pm and going to 6pm of the next day, and note its day of the week
+# this is for grouping/plotting later
+sleepByTheMinute$sleepday <- format(sleepByTheMinute$dateTime - hms(hours = 18), format = "%A")
+sleepByTheMinute$sleepday <- factor(sleepByTheMinute$sleepday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+sleepByTheMinute$level <- factor(x = NA, levels = c("deep", "asleep", "light", "rem", "restless", "wake", "awake"))
+
+# populate the sleep level data in this new data structure
+null <- lapply(1:dim(sleepData)[1], function(index) {
+  sleepByTheMinute$level[sleepByTheMinute$dateTime >= round(sleepData$dateTime[index], units = "mins") &
+                        sleepByTheMinute$dateTime <= trunc(sleepData$endTime[index], units = "mins")] <<- sleepData$level[index]
+  })  
+
+# combine some of the sleep levels into fewer types
+sleepByTheMinute$type <- factor(x = NA, levels = c("deep/asleep", "light", "rem/restless", "awake"))
+sleepByTheMinute$type[sleepByTheMinute$level %in% c("deep", "asleep")] <- "deep/asleep"
+sleepByTheMinute$type[sleepByTheMinute$level %in% c("light")] <- "light"
+sleepByTheMinute$type[sleepByTheMinute$level %in% c("rem", "restless")] <- "rem/restless"
+sleepByTheMinute$type[sleepByTheMinute$level %in% c("wake", "awake")] <- "awake"
+
+sleepColors <- c("darkblue", "blue", "lightblue", "red")
+
+# the sleep figure will have just two panels. the first is a pseudo-heatmap showing the color-coded sleep level 
+# across all days (on the y axis) and time of day (on the x axis)
+
+# to display the sleep map as a continuous chunk of "night" starting at 6pm and going through midnight into next morning, 
+# add 6 hours to the time and then subtract it back in the labels
+sleepHeatmapPlot <- ggplot(sleepByTheMinute, aes(x = as.hms( as.integer(hms + 6*60*60) %% (24*60*60) ), y=as.POSIXct(date))) +
+  geom_raster(aes(fill=type)) +
+  scale_y_continuous(trans = rev_date) +
+  scale_x_time(labels = function(hms) format_hampm( as.hms( as.integer(hms - 6*60*60) %% (24*60*60)  )), 
+               breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  scale_fill_manual(values = sleepColors, breaks = c("deep/asleep", "light", "rem/restless", "awake")) +
+  guides(fill = guide_legend(title = "Sleep level", nrow = 1)) +
+  xlab("Time of night") + ylab("") + 
+  theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+# sleepHeatmapPlot + theme(legend.position = "bottom")
+
+# the second panel will have aggregated amount of time spent in each sleep level, by time of night/day, averaged over all days
+# (separately for weekdays and weekends)
+sleepByDayHMS <- sleepByTheMinute %>%
+  group_by(sleepday, hms) %>%
+  summarise(list = list(enframe(table(type), name = "type", value = "count"))) %>%
+  unnest() 
+sleepByDayHMS$type <- factor(sleepByDayHMS$type, levels = c("deep/asleep", "light", "rem/restless", "awake"))
+
+sleepByDayHMS$daytype <- factor(x = NA, levels = c("weekday", "weekend"))
+sleepByDayHMS$daytype[sleepByDayHMS$sleepday %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")] <- "weekday"
+sleepByDayHMS$daytype[sleepByDayHMS$sleepday %in% c("Saturday","Sunday")] <- "weekend"
+
+sleepByDayHMSPlot <- ggplot(data = sleepByDayHMS, aes(x = as.hms( as.integer(hms + 6*60*60) %% (24*60*60) ), y = count, fill = type)) +
+  facet_grid(rows = vars(daytype), scales = "free") +
+  geom_bar(position = position_stack(reverse = TRUE), stat = "identity", width = 100) +
+  scale_fill_manual(values = sleepColors, breaks = c("deep/asleep", "light", "rem/restless", "awake")) +
+  # scale_x_time(labels = format_hampm, breaks = NULL, position = "top") + # move the labels out of the way, this panel won't have them
+  scale_x_time(labels = function(hms) format_hampm( as.hms( as.integer(hms - 6*60*60) %% (24*60*60)  )),
+               breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  scale_y_continuous(breaks = NULL) +
+  labs(y = "Profile by time", x = "Time of night") +
+  guides(fill = guide_legend(title = "Sleep level", nrow = 1)) +  # specify the legend, but don't include in plot - will display separately
+  theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+# sleepByDayHMSPlot + theme(legend.position = "bottom") # if you want to preview/tweak this plot by itself
+
+# to prepare the legend
+sleepLegend <- get_legend(sleepHeatmapPlot + theme(legend.position = "bottom"))
+
+# now, to put all the plots/legends together into a figure
+sleepFigure <- ggarrange(sleepHeatmapPlot, sleepByDayHMSPlot, ggplot(),
+               nrow = 2, heights = c(3, 0.3), widths = c(1, 1),
+               labels = c("A", "B"), 
+               label.args = list(gp=gpar(font=4), x=unit(1,"line"), hjust=-0.0), 
+               bottom = "Figure 4", draw = FALSE)
+
+# then manually place in the legend in the place of the empty ggplot()
+# see where in the gtable that would be (the numbering)
+# gtable_show_layout(sleepFigure) 
+sleepFigure <- gtable_add_grob(sleepFigure, sleepLegend, t=4, l=1, b=6, r=6)
+# plot(sleepFigure) # a debugging plot with background
+
+# full figure render 
+grid.newpage()
+grid.draw(sleepFigure)
+
+```
+</details>
+
+### Other data and explanation of data structures  
+<details>
+  <summary>Expand if you need to know the geeky details</summary>
+
+The data is in a series of .json files, many with dates, and others without. The files with dates at the end are in the following categories:  
+```{r explore1}
+datedFiles <- grepl(pattern = "-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList)
+sort(unique(sub(pattern = "-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", "", jsonFileList[datedFiles])))
+```
+`height` and `weight` simply contain the values that I input initially, nothing more (perhaps some of these things would get automatically updated with some advanced gatgetry?) `altitude` for me only has a few files with nonsensical values (my phone's GPS is mostly off), but this could be potentially interesting to look into for BPM, etc at higher-altitude hikes.   
+
+<details>
+  <summary>`calories`</summary>
+
+The `calories` data generally matches the heartrate data (although it is not a perfect correlation), and is likely calculated based on bpm, steps/min and possibly other stuff.  
+```{r calories, results = "hide"}
+# collect the calories values from all the files into a single dataframe, extract and reformat the day of week and time of day (hms)
+caloriesFiles <- grep(pattern = "^calories-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+calories <- do.call(rbind,lapply(caloriesFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+# unlike the steps and heartrates data, the calories date/time is apparently stored in local time, not UTC time
+calories$dateTime <- as.POSIXct(calories$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = tz)
+attributes(calories$dateTime)$tzone <- tz 
+calories$value <- as.numeric(calories$value)
+calories$date <- as.Date(calories$dateTime, tz = tz)
+calories$day <- format(calories$dateTime, format = "%A")
+calories$day <- factor(calories$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+calories$hms <- as.hms(calories$dateTime, tz = tz)
+
+caloriesRange <- quantile(calories$value, c(0.01, 0.99))
+caloriesRange <- c(5*floor(min(caloriesRange)/5), 5*ceiling(max(caloriesRange)/5))
+
+caloriesPlot <- ggplot(calories, aes(hms, as.POSIXct(date))) + 
+  geom_raster(aes(fill = value)) +
+  scale_fill_gradientn(name = "calories", limits = caloriesRange, oob = squish, 
+                       colors = heatmapPalette(5)) +
+  scale_y_continuous(trans = rev_date) +
+  scale_x_time(labels = format_hampm, breaks = hms(hours = c(0,6,12,18,24)), minor_breaks = hms(hours = seq(0,24))) +
+  xlab("Time of day") + ylab("") + 
+  guides(fill = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
+  theme(legend.position = "none") +
+  theme(plot.margin = unit(c(0,0,0,0), "lines"))
+caloriesPlot + theme(legend.position = "bottom")
+
+StepsAndCalories <- inner_join(steps, calories, by = "dateTime")
+
+ggplot(StepsAndCalories, aes(value.x, value.y)) +
+  geom_bin2d() +
+  scale_fill_gradient(limits = c(0, 5000), oob = squish) +
+  labs(x = "Steps/min", y = "Calories")
+
+BPMAndCalories <- inner_join(heartrates2, calories, by = "dateTime")
+
+ggplot(BPMAndCalories, aes(meanbpm, value)) +
+  geom_bin2d() +
+  scale_fill_gradient(limits = c(0, 5000), oob = squish) +
+  labs(x = "Heartrate, BPM", y = "Calories")
+```
+</details>
+
+<details>
+  <summary>`demographic_vo2_max`</summary>
+`demographic_vo2_max` is apparently oxygen uptake values, which must be also calculated from the measured data. I saw no obvious correlations with total steps/day.   
+```{r vo2max, results = "hide"}
+# collect the vo2max values from all the files into a single dataframe, extract and reformat the day of week
+vo2maxFiles <- grep(pattern = "^demographic_vo2_max-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+vo2max <- do.call(rbind,lapply(vo2maxFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+colnames(vo2max) <- gsub("value\\.", "", colnames(vo2max))
+colnames(vo2max) <- gsub("[d|D]emographic", "", colnames(vo2max))
+vo2max$dateTime <- as.POSIXct(vo2max$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = tz)
+vo2max$date <- as.Date(vo2max$dateTime, tz = tz)
+vo2max$day <- format(vo2max$dateTime, format = "%A")
+vo2max$day <- factor(vo2max$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+
+stepsAndVO2max <- inner_join(totalStepsByDate, vo2max, by = "date")
+ggplot(stepsAndVO2max, aes(totalSteps, filteredVO2Max)) +
+  geom_point() +
+  labs(x = "Steps", y = "VO2 max")
+```
+</details>
+
+<details>
+  <summary>`distance`</summary>
+The `distance` data seems to be very linearly calculated from the steps/min data.  
+```{r distance, results = "hide"}
+# collect the distance values from all the files into a single dataframe, extract and reformat the day of week and time of day (hms)
+distanceFiles <- grep(pattern = "^distance-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+distance <- do.call(rbind,lapply(distanceFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+distance$dateTime <- as.POSIXct(distance$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = "UTC")
+attributes(distance$dateTime)$tzone <- tz 
+distance$date <- as.Date(distance$dateTime, tz = tz)
+distance$day <- format(distance$dateTime, format = "%A")
+distance$day <- factor(distance$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+distance$hms <- as.hms(distance$dateTime, tz = tz)
+distance$value <- as.numeric(distance$value)
+
+ggplot(data = data.frame(x = steps$value, y = distance$value), aes(x, y)) +
+  geom_point() +
+  labs(x = "Steps", y = "Distance")
+```
+</details>
+
+<details>
+  <summary>`..._minutes`</summary>
+The `sedentary_minutes`, `lightly_active_minutes`, `moderately_active_minutes` and `very_active_minutes` files contain daily minute tallies of these activity categories, presumably calculated from the heart rate data.  
+```{r minutes, results = "hide"}
+sMinutesFiles <- grep(pattern = "^sedentary_minutes-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", 
+                       jsonFileList, value = TRUE)
+sMinutes <- do.call(rbind,lapply(sMinutesFiles, 
+                                  function(file) fromJSON(paste0("./data/user-site-export/", file))))
+laMinutesFiles <- grep(pattern = "^lightly_active_minutes-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", 
+                       jsonFileList, value = TRUE)
+laMinutes <- do.call(rbind,lapply(laMinutesFiles, 
+                                  function(file) fromJSON(paste0("./data/user-site-export/", file))))
+maMinutesFiles <- grep(pattern = "^moderately_active_minutes-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", 
+                       jsonFileList, value = TRUE)
+maMinutes <- do.call(rbind,lapply(maMinutesFiles, 
+                                  function(file) fromJSON(paste0("./data/user-site-export/", file))))
+vaMinutesFiles <- grep(pattern = "^very_active_minutes-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", 
+                       jsonFileList, value = TRUE)
+vaMinutes <- do.call(rbind,lapply(vaMinutesFiles, 
+                                  function(file) fromJSON(paste0("./data/user-site-export/", file))))
+
+minutes <- Reduce(function(...) merge(..., by = "dateTime", sort = FALSE, all=TRUE), 
+                  list(sMinutes, laMinutes, maMinutes, vaMinutes))
+minutes$dateTime <- as.POSIXct(minutes$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = "UTC")
+minutes[,2:5] <- apply(minutes[,2:5], 2, as.numeric)
+colnames(minutes) <- c("dateTime", "sedentary", "lightly active", "moderately active", "very active")
+minutes$date <- as.Date(minutes$dateTime, tz = "UTC")
+minutes$day <- format(minutes$dateTime, format = "%A")
+minutes$day <- factor(minutes$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+
+minutesLong <- minutes %>%
+  gather(key = "activityLevel", value = "minutes", 2:5)
+minutesLong$activityLevel <- factor(minutesLong$activityLevel, levels = c("sedentary", "lightly active", 
+                                                                          "moderately active", "very active"))
+minutesByDatePlot <- ggplot(minutesLong, aes(as.POSIXct(date), minutes, fill = activityLevel, group = activityLevel)) +
+  geom_col(position=position_stack(reverse=T)) +
+  scale_fill_manual(values = c("gray95", "green", "yellow", "red", "purple")) +
+  labs(x = "Date", y = "Minutes")
+minutesByDatePlot
+```
+</details>
+
+<details>
+  <summary>`time_in_heart_rate_zones`</summary>
+`time_in_heart_rate_zones` is exactly that, how many minutes in each day were spent in four different heart rate zones. How the numeric boundaries of each zone are defined is not clear.  
+```{r time_in_zones, results = "hide"}
+timeFiles <- grep(pattern = "^time_in_heart_rate_zones-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.json$", jsonFileList, value = TRUE)
+time <- do.call(rbind,lapply(timeFiles, function(file) fromJSON(paste0("./data/user-site-export/", file),
+                                                                           flatten = TRUE)))
+colnames(time) <- gsub("value\\.valuesInZones\\.", "", colnames(time))
+time$dateTime <- as.POSIXct(time$dateTime, format = "%m/%d/%y %H:%M:%OS", tz = "UTC")
+time$date <- as.Date(time$dateTime, tz = tz)
+time$day <- format(time$dateTime, format = "%A")
+time$day <- factor(time$day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", 
+                                          "Friday", "Saturday", "Sunday"))
+
+timeLong <- time %>%
+  gather(key = "zone", value = "time", 2:5)
+timeLong$zone <- factor(timeLong$zone, levels = c("BELOW_DEFAULT_ZONE_1", "IN_DEFAULT_ZONE_1", 
+                                                  "IN_DEFAULT_ZONE_2",  "IN_DEFAULT_ZONE_3"))
+timeByDatePlot <- ggplot(timeLong, aes(as.POSIXct(date), time, fill = zone, group = zone)) +
+  geom_col(position=position_stack(reverse=T)) +
+  scale_fill_manual(values = c("gray95", "green", "yellow", "red", "purple")) +
+  labs(x = "Date", y = "Time in heart rate zones, minutes")
+timeByDatePlot
+```
+</details>
+
+The files without dates are:
+```{r explore2}
+jsonFileList[!datedFiles]
+```
+The `badge` file contains all the badges you've earned. The `exercise` files contain the processed info on all the exercise periods you've had. This may be interesting to look into later.
+</details>
+
+# Acknowledgements  
+
+This exercise has been fun because of all the open source tools and code out there that I happily used, so thanks to the creators of all of it -- ggplot, egg, etc, etc. Thanks to countless webpages that went into details on how to solve particular coding problems - I've relied on that heavily.
+
+<details> 
+<summary>Some of the most useful webpages:</summary>
+https://community.fitbit.com/t5/Fitbit-com-Dashboard/Working-with-JSON-data-export-files/td-p/3098623  
+https://cran.r-project.org/web/packages/egg/vignettes/Ecosystem.html  
+https://cran.r-project.org/web/packages/egg/vignettes/Overview.html  
+https://stackoverflow.com/questions/47614314/how-to-put-plots-without-any-space-using-plot-grid  
+https://cran.r-project.org/web/packages/cowplot/vignettes/shared_legends.html  
+</details>
