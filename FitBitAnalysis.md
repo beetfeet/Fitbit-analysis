@@ -15,7 +15,7 @@ Steps
 
 The fitbit records how many steps per minute I walk. What does that look like? Figure 1B shows the overall heatmap, where each thin horizontal line represents time along each day, and the colors represent the steps/min. We can already see some clear patterns of activity at the same times of day - get up, go to work, go to lunch, go home. That's for the weekdays (not a ton of walking on the job). When averaged separately for each day of the week (Figure 1A), we can see these walking spikes at particular times again, and they are not present for the weekends. But on some days, there's a lot of walking in general - those are the horizontal red streaks in Figure 1B, also seen in the total steps for each day (Figure 1C, colored by the walking pace of the steps). That's hiking on the weekends. We can also see that there is more walking on Sat and Sun overall, compared to weekdays (total area for each sliver in Figure 1A). But are all the weekends like that? How similar are the weekends and the weekdays to each other? If we apply principal component analysis and stratify the days by their first component (i.e. line them up by their most prominent differences), we can take the top, middle and bottom 10% of the days and average within those groups. That is done separately for weekdays and weekends in Figure 1D. We can see that the weekdays are more similar to each other (although still variable), but the weekends vary the most. There is still couch time on some weekends.
 
-![](images/steps1-1.png) </details>
+![](Fitbit-analysis/images/steps1-1.png) </details>
 
 Heartrate
 =========
@@ -23,10 +23,10 @@ Heartrate
 <details open> <summary>When is it high and low?</summary>
 The heartrate heatmap looks similar to the steps heatmap - obviously, heartrate goes up when I walk and hike (Figure 2B). You can also see the peaks and valleys in the profile for each day of the week (Figure 2A), for the weekdays. On the weekends, the heartrate is generally higher (and that is good?!) An interesting and somewhat unexpected observation is that the heartrate during sleep is much higher for the weekends (and somewhat higher on Mondays). One possibility is that it's because of the beers on the evenings before? Alcohol raises your heartrate, but I did not think it would be that much.
 
-![](images/heartrate1-1.png)
+![](Fitbit-analysis/images/heartrate1-1.png)
 
 How does the steps/min and heartrate data correlate with each other? If we plot a heatmap of their combinations (Figure 3), with heartrate on the x axis, steps/min on the y, and the color denoting how many times that combination is encountered, we can see two main regimes that I'm in: a huge blob of low steps/min and (mostly) low heartrate, i.e. just sitting around. And a cloud at 100-120 steps/min and higher heartrate - i.e. walking. Note that there is also a high count of 0 steps/min at higher BPMs - that's likely bicycling, and resting after walking.
-![](images/steps-bpm-1.png) </details>
+![](Fitbit-analysis/images/steps-bpm-1.png) </details>
 
 Sleep
 =====
@@ -34,7 +34,7 @@ Sleep
 <details open> <summary>Any interesting patterns in the sleep?</summary>
 The Fitbit records sleep data in the form of levels - deep, light and REM sleep. The sleep heatmap, color coded by these levels, is fairly uniform (Figure 4A). If you average out the levels over time, separately for weekdays and weekends (Figure 4B), you can see that I go to sleep earlier and get up earlier on the weekdays - no surprise. Within the night, the deep sleep tends to happen earlier in the night, with more REM sleep toward the morning - as expected.
 
-![](images/sleep-1.png) </details>
+![](Fitbit-analysis/images/sleep-1.png) </details>
 
 ### Other data and explanation of data structures
 
@@ -56,19 +56,19 @@ The data is in a series of .json files, many with dates, and others without. The
 <details> <summary>`calories`</summary>
 
 The `calories` data generally matches the heartrate data (although it is not a perfect correlation), and is likely calculated based on bpm, steps/min and possibly other stuff.
-![](images/calories-1.png)![](images/calories-2.png)![](images/calories-3.png) </details>
+![](Fitbit-analysis/images/calories-1.png)![](Fitbit-analysis/images/calories-2.png)![](Fitbit-analysis/images/calories-3.png) </details>
 
 <details> <summary>`demographic_vo2_max`</summary> `demographic_vo2_max` is apparently oxygen uptake values, which must be also calculated from the measured data. I saw no obvious correlations with total steps/day.
-![](images/vo2max-1.png) </details>
+![](Fitbit-analysis/images/vo2max-1.png) </details>
 
 <details> <summary>`distance`</summary> The `distance` data seems to be very linearly calculated from the steps/min data.
-![](images/distance-1.png) </details>
+![](Fitbit-analysis/images/distance-1.png) </details>
 
 <details> <summary>`..._minutes`</summary> The `sedentary_minutes`, `lightly_active_minutes`, `moderately_active_minutes` and `very_active_minutes` files contain daily minute tallies of these activity categories, presumably calculated from the heart rate data.
-![](images/minutes-1.png) </details>
+![](Fitbit-analysis/images/minutes-1.png) </details>
 
 <details> <summary>`time_in_heart_rate_zones`</summary> `time_in_heart_rate_zones` is exactly that, how many minutes in each day were spent in four different heart rate zones. How the numeric boundaries of each zone are defined is not clear.
-![](images/time_in_zones-1.png) </details>
+![](Fitbit-analysis/images/time_in_zones-1.png) </details>
 
 The files without dates are:
 
